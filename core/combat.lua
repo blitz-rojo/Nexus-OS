@@ -1,10 +1,10 @@
 -- ╔══════════════════════════════════════════════════════════╗
--- ║            NEXUS OS v2.0 - ESP SYSTEM MODULE            ║
--- ║              Features 36-55: Visual ESP System           ║
+-- ║          NEXUS OS v2.0 - COMBAT SYSTEM MODULE           ║
+-- ║            Features 56-75: Combat Assist System          ║
 -- ╚══════════════════════════════════════════════════════════╝
 
-local ESPSystem = {}
-ESPSystem.__index = ESPSystem
+local CombatSystem = {}
+CombatSystem.__index = CombatSystem
 
 -- ============================================
 -- SERVICES
@@ -12,6 +12,7 @@ ESPSystem.__index = ESPSystem
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
 
@@ -20,820 +21,618 @@ local Camera = Workspace.CurrentCamera
 -- ============================================
 
 local CONFIG = {
-    -- ESP Settings
-    Enabled = false,
+    -- Feature Toggles (56-75)
+    SilentAim = false,        -- 56
+    AimAssist = false,        -- 57
+    TriggerBot = false,       -- 58
+    FOVCircle = true,         -- 59
+    TargetLock = false,       -- 60
+    PriorityTarget = false,   -- 61
+    Prediction = true,        -- 62
+    AutoHeadBody = false,     -- 63
+    LegitMode = false,        -- 64
+    RageMode = false,         -- 65
+    AutoFire = false,         -- 66
+    Smoothing = true,         -- 67
+    VisibleCheck = true,      -- 68
+    IgnoreFriends = true,     -- 69
+    KeyActivated = false,     -- 70
+    DistanceCheck = true,     -- 71
+    AntiDetection = true,     -- 72
+    PingBased = false,        -- 73
+    MultiHitbox = false,      -- 74
+    NPCTarget = false,        -- 75
     
-    -- Feature Toggles (36-55)
-    Box = true,              -- 36
-    Skeleton = false,        -- 37
-    Highlight = true,        -- 38
-    TeamCheck = false,       -- 39
-    Distance = true,         -- 40
-    HealthBar = false,       -- 41
-    CustomName = false,      -- 42
-    Weapon = false,          -- 43
-    ShowInvisible = false,   -- 44
-    OffscreenArrow = false,  -- 45
-    DynamicColor = true,     -- 46
-    PriorityTarget = false,  -- 47
-    FOVCheck = false,        -- 48
-    Optimized = true,        -- 49
-    UseWhitelist = false,    -- 50
-    UseBlacklist = false,    -- 51
-    TeamESP = false,         -- 52
-    ThreatLevel = false,     -- 53
-    FadeWithDistance = true, -- 54
-    QuickToggle = true,      -- 55
-    
-    -- Visual Settings
-    BoxColor = Color3.fromRGB(255, 0, 0),
-    BoxThickness = 2,
-    SkeletonColor = Color3.fromRGB(255, 255, 255),
-    SkeletonThickness = 1,
-    HealthBarColor = Color3.fromRGB(0, 255, 0),
-    
-    -- Distance Settings
+    -- Aim Settings
+    FOV = 90,
+    Smoothness = 0.1,
+    PredictionStrength = 0.135,
     MaxDistance = 1000,
     MinDistance = 10,
-    FadeStart = 500,
     
-    -- FOV Settings
-    FOV = 90,
+    -- Target Settings
+    TargetPart = "Head",
+    AlternativePart = "UpperTorso",
+    PriorityRoles = {"Murderer", "Sheriff", "Impostor", "Beast"},
     
-    -- Lists
-    Whitelist = {},
-    Blacklist = {},
-    PriorityTargets = {"Murderer", "Sheriff", "Impostor", "Beast"},
+    -- Trigger Bot Settings
+    TriggerDelay = 0.05,
+    TriggerHoldTime = 0.1,
+    
+    -- Auto Fire Settings
+    FireRate = 0.1,
+    BurstMode = false,
+    BurstCount = 3,
+    
+    -- Keybinds
+    AimKey = Enum.UserInputType.MouseButton2, -- Right click
+    LockKey = Enum.KeyCode.Q,
+    
+    -- Anti-Detection
+    Humanized = true,
+    RandomOffset = 0.5,
+    ShakeAmount = 0.2,
     
     -- Performance
-    UpdateRate = 60, -- FPS
-    MaxPlayers = 50
+    UpdateRate = 60
 }
 
 -- ============================================
--- ESP INSTANCES
+-- STATE
 -- ============================================
 
-local ESPInstances = {}
-local Connections = {}
+local State = {
+    CurrentTarget = nil,
+    LockedTarget = nil,
+    LastFireTime = 0,
+    BurstCounter = 0,
+    Connections = {},
+    FOVCircle = nil
+}
 
 -- ============================================
 -- HELPER FUNCTIONS
 -- ============================================
 
--- Check if Drawing API is available
-local function HasDrawingAPI()
-    return Drawing ~= nil and typeof(Drawing) == "table" and Drawing.new ~= nil
+-- Get ping compensation
+local function GetPing()
+    local ping = 0
+    pcall(function()
+        ping = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    return ping / 1000 -- Convert to seconds
 end
 
--- Get player team
-local function GetPlayerTeam(player)
-    return player.Team
-end
-
--- Check if player is on same team
-local function IsSameTeam(player1, player2)
-    if not CONFIG.TeamCheck then return false end
-    return GetPlayerTeam(player1) == GetPlayerTeam(player2)
-end
-
--- Calculate distance
-local function GetDistance(position1, position2)
-    return (position1 - position2).Magnitude
-end
-
--- Check if in FOV
-local function IsInFOV(position)
-    if not CONFIG.FOVCheck then return true end
+-- Check if player is friend
+local function IsFriend(player)
+    if not CONFIG.IgnoreFriends then return false end
     
-    local screenPos, onScreen = Camera:WorldToViewportPoint(position)
-    if not onScreen then return false end
-    
-    local centerX = Camera.ViewportSize.X / 2
-    local centerY = Camera.ViewportSize.Y / 2
-    
-    local distance = math.sqrt((screenPos.X - centerX)^2 + (screenPos.Y - centerY)^2)
-    local maxDistance = math.tan(math.rad(CONFIG.FOV / 2)) * Camera.ViewportSize.Y
-    
-    return distance <= maxDistance
+    local localPlayer = Players.LocalPlayer
+    return localPlayer:IsFriendsWith(player.UserId)
 end
 
--- Get transparency based on distance
-local function GetTransparencyByDistance(distance)
-    if not CONFIG.FadeWithDistance then return 1 end
+-- Check if player is visible
+local function IsVisible(targetPart, origin)
+    if not CONFIG.VisibleCheck then return true end
     
-    if distance < CONFIG.FadeStart then
-        return 1
-    else
-        local fadeRange = CONFIG.MaxDistance - CONFIG.FadeStart
-        local fadeAmount = (distance - CONFIG.FadeStart) / fadeRange
-        return 1 - math.clamp(fadeAmount, 0, 0.7)
-    end
-end
-
--- Get color by threat level
-local function GetThreatColor(player)
-    if not CONFIG.ThreatLevel then
-        return CONFIG.BoxColor
-    end
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    rayParams.FilterDescendantsInstances = {
+        Players.LocalPlayer.Character,
+        Camera
+    }
     
-    -- Check if player is priority target
-    local character = player.Character
-    if character then
-        for _, targetName in pairs(CONFIG.PriorityTargets) do
-            if player.Name:lower():find(targetName:lower()) or
-               (character:FindFirstChild("Role") and 
-                character.Role.Value:lower():find(targetName:lower())) then
-                return Color3.fromRGB(255, 0, 0) -- Red for threats
-            end
-        end
-    end
+    local direction = (targetPart.Position - origin).Unit * (targetPart.Position - origin).Magnitude
+    local ray = Workspace:Raycast(origin, direction, rayParams)
     
-    return Color3.fromRGB(0, 255, 0) -- Green for safe
-end
-
--- Get dynamic color based on state
-local function GetDynamicColor(player, distance)
-    if CONFIG.DynamicColor then
-        if CONFIG.ThreatLevel then
-            return GetThreatColor(player)
-        end
-        
-        -- Color by distance
-        if distance < 50 then
-            return Color3.fromRGB(255, 0, 0) -- Close: Red
-        elseif distance < 200 then
-            return Color3.fromRGB(255, 165, 0) -- Medium: Orange
-        else
-            return Color3.fromRGB(0, 255, 0) -- Far: Green
-        end
-    end
-    
-    return CONFIG.BoxColor
-end
-
--- Check lists
-local function IsWhitelisted(player)
-    return CONFIG.Whitelist[tostring(player.UserId)] ~= nil
-end
-
-local function IsBlacklisted(player)
-    return CONFIG.Blacklist[tostring(player.UserId)] ~= nil
-end
-
-local function ShouldShowPlayer(player)
-    if CONFIG.UseWhitelist and not IsWhitelisted(player) then
-        return false
-    end
-    
-    if CONFIG.UseBlacklist and IsBlacklisted(player) then
-        return false
+    if ray then
+        local hitCharacter = ray.Instance:FindFirstAncestorOfClass("Model")
+        return hitCharacter == targetPart.Parent
     end
     
     return true
 end
 
--- ============================================
--- FEATURE 36: ESP BOX
--- ============================================
-
-local function CreateBox()
-    if not HasDrawingAPI() then return nil end
-    
-    local box = {
-        TopLeft = Drawing.new("Line"),
-        TopRight = Drawing.new("Line"),
-        BottomLeft = Drawing.new("Line"),
-        BottomRight = Drawing.new("Line"),
-        LeftSide = Drawing.new("Line"),
-        RightSide = Drawing.new("Line"),
-        TopSide = Drawing.new("Line"),
-        BottomSide = Drawing.new("Line")
-    }
-    
-    for _, line in pairs(box) do
-        line.Visible = false
-        line.Color = CONFIG.BoxColor
-        line.Thickness = CONFIG.BoxThickness
-        line.Transparency = 1
-    end
-    
-    return box
-end
-
-local function UpdateBox(box, corners, color, transparency)
-    if not box or not corners then return end
-    
-    -- Top Left
-    box.TopLeft.From = corners.TopLeft
-    box.TopLeft.To = corners.TopRight
-    box.TopLeft.Color = color
-    box.TopLeft.Transparency = transparency
-    box.TopLeft.Visible = true
-    
-    -- Top Right
-    box.TopRight.From = corners.TopRight
-    box.TopRight.To = corners.BottomRight
-    box.TopRight.Color = color
-    box.TopRight.Transparency = transparency
-    box.TopRight.Visible = true
-    
-    -- Bottom Right
-    box.BottomRight.From = corners.BottomRight
-    box.BottomRight.To = corners.BottomLeft
-    box.BottomRight.Color = color
-    box.BottomRight.Transparency = transparency
-    box.BottomRight.Visible = true
-    
-    -- Bottom Left
-    box.BottomLeft.From = corners.BottomLeft
-    box.BottomLeft.To = corners.TopLeft
-    box.BottomLeft.Color = color
-    box.BottomLeft.Transparency = transparency
-    box.BottomLeft.Visible = true
-end
-
-local function HideBox(box)
-    if not box then return end
-    for _, line in pairs(box) do
-        line.Visible = false
-    end
-end
-
--- ============================================
--- FEATURE 37: ESP SKELETON
--- ============================================
-
-local function CreateSkeleton()
-    if not HasDrawingAPI() then return nil end
-    
-    local skeleton = {}
-    local bones = {
-        "Head-UpperTorso",
-        "UpperTorso-LeftUpperArm",
-        "LeftUpperArm-LeftLowerArm",
-        "LeftLowerArm-LeftHand",
-        "UpperTorso-RightUpperArm",
-        "RightUpperArm-RightLowerArm",
-        "RightLowerArm-RightHand",
-        "UpperTorso-LowerTorso",
-        "LowerTorso-LeftUpperLeg",
-        "LeftUpperLeg-LeftLowerLeg",
-        "LeftLowerLeg-LeftFoot",
-        "LowerTorso-RightUpperLeg",
-        "RightUpperLeg-RightLowerLeg",
-        "RightLowerLeg-RightFoot"
-    }
-    
-    for _, boneName in pairs(bones) do
-        local line = Drawing.new("Line")
-        line.Visible = false
-        line.Color = CONFIG.SkeletonColor
-        line.Thickness = CONFIG.SkeletonThickness
-        line.Transparency = 1
-        skeleton[boneName] = line
-    end
-    
-    return skeleton
-end
-
-local function UpdateSkeleton(skeleton, character, color, transparency)
-    if not skeleton or not character then return end
-    
-    for boneName, line in pairs(skeleton) do
-        local parts = string.split(boneName, "-")
-        local part1 = character:FindFirstChild(parts[1])
-        local part2 = character:FindFirstChild(parts[2])
-        
-        if part1 and part2 then
-            local pos1, onScreen1 = Camera:WorldToViewportPoint(part1.Position)
-            local pos2, onScreen2 = Camera:WorldToViewportPoint(part2.Position)
-            
-            if onScreen1 and onScreen2 then
-                line.From = Vector2.new(pos1.X, pos1.Y)
-                line.To = Vector2.new(pos2.X, pos2.Y)
-                line.Color = color
-                line.Transparency = transparency
-                line.Visible = true
-            else
-                line.Visible = false
-            end
-        else
-            line.Visible = false
-        end
-    end
-end
-
-local function HideSkeleton(skeleton)
-    if not skeleton then return end
-    for _, line in pairs(skeleton) do
-        line.Visible = false
-    end
-end
-
--- ============================================
--- FEATURE 38: ESP HIGHLIGHT (Fallback)
--- ============================================
-
-local function CreateHighlight(character)
-    local highlight = Instance.new("Highlight")
-    highlight.Name = "NexusESP_Highlight"
-    highlight.FillColor = CONFIG.BoxColor
-    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
-    highlight.FillTransparency = 0.5
-    highlight.OutlineTransparency = 0
-    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    highlight.Parent = character
-    
-    return highlight
-end
-
--- ============================================
--- FEATURE 40: ESP DISTANCE
--- ============================================
-
-local function CreateDistanceLabel()
-    if not HasDrawingAPI() then return nil end
-    
-    local text = Drawing.new("Text")
-    text.Visible = false
-    text.Color = Color3.fromRGB(255, 255, 255)
-    text.Size = 14
-    text.Center = true
-    text.Outline = true
-    text.Font = Drawing.Fonts.UI
-    
-    return text
-end
-
-local function UpdateDistanceLabel(text, position, distance, transparency)
-    if not text then return end
-    
+-- Check if in FOV
+local function IsInFOV(position)
     local screenPos, onScreen = Camera:WorldToViewportPoint(position)
+    if not onScreen then return false, 999 end
     
-    if onScreen then
-        text.Position = Vector2.new(screenPos.X, screenPos.Y - 20)
-        text.Text = string.format("%.0f studs", distance)
-        text.Transparency = transparency
-        text.Visible = true
-    else
-        text.Visible = false
-    end
+    local centerX = Camera.ViewportSize.X / 2
+    local centerY = Camera.ViewportSize.Y / 2
+    
+    local distanceFromCenter = math.sqrt(
+        (screenPos.X - centerX)^2 + 
+        (screenPos.Y - centerY)^2
+    )
+    
+    local maxDistance = math.tan(math.rad(CONFIG.FOV / 2)) * Camera.ViewportSize.Y
+    
+    return distanceFromCenter <= maxDistance, distanceFromCenter
 end
 
--- ============================================
--- FEATURE 41: ESP HEALTH BAR
--- ============================================
-
-local function CreateHealthBar()
-    if not HasDrawingAPI() then return nil end
-    
-    local healthBar = {
-        Background = Drawing.new("Square"),
-        Foreground = Drawing.new("Square")
-    }
-    
-    healthBar.Background.Visible = false
-    healthBar.Background.Color = Color3.fromRGB(0, 0, 0)
-    healthBar.Background.Thickness = 1
-    healthBar.Background.Filled = true
-    
-    healthBar.Foreground.Visible = false
-    healthBar.Foreground.Color = CONFIG.HealthBarColor
-    healthBar.Foreground.Thickness = 1
-    healthBar.Foreground.Filled = true
-    
-    return healthBar
+-- Get distance between two positions
+local function GetDistance(pos1, pos2)
+    return (pos1 - pos2).Magnitude
 end
 
-local function UpdateHealthBar(healthBar, position, health, maxHealth, transparency)
-    if not healthBar then return end
+-- Check if target is priority
+local function IsPriorityTarget(player)
+    if not CONFIG.PriorityTarget then return false end
     
-    local screenPos, onScreen = Camera:WorldToViewportPoint(position)
-    
-    if onScreen then
-        local barWidth = 50
-        local barHeight = 6
-        local healthPercentage = health / maxHealth
-        
-        -- Background
-        healthBar.Background.Size = Vector2.new(barWidth, barHeight)
-        healthBar.Background.Position = Vector2.new(screenPos.X - barWidth/2, screenPos.Y + 25)
-        healthBar.Background.Transparency = transparency * 0.5
-        healthBar.Background.Visible = true
-        
-        -- Foreground
-        healthBar.Foreground.Size = Vector2.new(barWidth * healthPercentage, barHeight)
-        healthBar.Foreground.Position = Vector2.new(screenPos.X - barWidth/2, screenPos.Y + 25)
-        healthBar.Foreground.Transparency = transparency
-        healthBar.Foreground.Visible = true
-        
-        -- Color based on health
-        if healthPercentage > 0.5 then
-            healthBar.Foreground.Color = Color3.fromRGB(0, 255, 0)
-        elseif healthPercentage > 0.25 then
-            healthBar.Foreground.Color = Color3.fromRGB(255, 165, 0)
-        else
-            healthBar.Foreground.Color = Color3.fromRGB(255, 0, 0)
-        end
-    else
-        healthBar.Background.Visible = false
-        healthBar.Foreground.Visible = false
-    end
-end
-
--- ============================================
--- FEATURE 42: ESP CUSTOM NAME
--- ============================================
-
-local function CreateNameLabel()
-    if not HasDrawingAPI() then return nil end
-    
-    local text = Drawing.new("Text")
-    text.Visible = false
-    text.Color = Color3.fromRGB(255, 255, 255)
-    text.Size = 16
-    text.Center = true
-    text.Outline = true
-    text.Font = Drawing.Fonts.UI
-    
-    return text
-end
-
-local function UpdateNameLabel(text, position, name, transparency)
-    if not text then return end
-    
-    local screenPos, onScreen = Camera:WorldToViewportPoint(position)
-    
-    if onScreen then
-        text.Position = Vector2.new(screenPos.X, screenPos.Y - 35)
-        text.Text = name
-        text.Transparency = transparency
-        text.Visible = true
-    else
-        text.Visible = false
-    end
-end
-
--- ============================================
--- FEATURE 45: OFFSCREEN ARROW
--- ============================================
-
-local function CreateOffscreenArrow()
-    if not HasDrawingAPI() then return nil end
-    
-    local arrow = Drawing.new("Triangle")
-    arrow.Visible = false
-    arrow.Color = Color3.fromRGB(255, 0, 0)
-    arrow.Filled = true
-    arrow.Thickness = 1
-    
-    return arrow
-end
-
-local function UpdateOffscreenArrow(arrow, position, color, transparency)
-    if not arrow then return end
-    
-    local screenPos, onScreen = Camera:WorldToViewportPoint(position)
-    
-    if not onScreen then
-        local screenCenter = Camera.ViewportSize / 2
-        local direction = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Unit
-        
-        local arrowPos = screenCenter + (direction * 100)
-        local angle = math.atan2(direction.Y, direction.X)
-        
-        local size = 15
-        arrow.PointA = Vector2.new(
-            arrowPos.X + math.cos(angle) * size,
-            arrowPos.Y + math.sin(angle) * size
-        )
-        arrow.PointB = Vector2.new(
-            arrowPos.X + math.cos(angle + 2.5) * size,
-            arrowPos.Y + math.sin(angle + 2.5) * size
-        )
-        arrow.PointC = Vector2.new(
-            arrowPos.X + math.cos(angle - 2.5) * size,
-            arrowPos.Y + math.sin(angle - 2.5) * size
-        )
-        
-        arrow.Color = color
-        arrow.Transparency = transparency
-        arrow.Visible = true
-    else
-        arrow.Visible = false
-    end
-end
-
--- ============================================
--- MAIN ESP SYSTEM
--- ============================================
-
-local function Get2DBox(character)
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
-    
-    -- Calculate bounding box
-    local cf = hrp.CFrame
-    local size = character:GetExtentsSize()
-    
-    local corners = {
-        TopLeft = cf * CFrame.new(-size.X/2, size.Y/2, 0),
-        TopRight = cf * CFrame.new(size.X/2, size.Y/2, 0),
-        BottomLeft = cf * CFrame.new(-size.X/2, -size.Y/2, 0),
-        BottomRight = cf * CFrame.new(size.X/2, -size.Y/2, 0)
-    }
-    
-    local screenCorners = {}
-    local allOnScreen = true
-    
-    for name, corner in pairs(corners) do
-        local screenPos, onScreen = Camera:WorldToViewportPoint(corner.Position)
-        screenCorners[name] = Vector2.new(screenPos.X, screenPos.Y)
-        if not onScreen then
-            allOnScreen = false
-        end
-    end
-    
-    return screenCorners, allOnScreen
-end
-
-local function CreateESPForPlayer(player)
-    if player == Players.LocalPlayer then return end
-    if ESPInstances[player] then return end
-    
-    local esp = {
-        Player = player,
-        Box = CONFIG.Box and CreateBox() or nil,
-        Skeleton = CONFIG.Skeleton and CreateSkeleton() or nil,
-        Highlight = nil, -- Criado quando character spawn
-        Distance = CONFIG.Distance and CreateDistanceLabel() or nil,
-        HealthBar = CONFIG.HealthBar and CreateHealthBar() or nil,
-        Name = CONFIG.CustomName and CreateNameLabel() or nil,
-        OffscreenArrow = CONFIG.OffscreenArrow and CreateOffscreenArrow() or nil
-    }
-    
-    ESPInstances[player] = esp
-    
-    -- Handle character spawn
-    local function OnCharacterAdded(character)
-        task.wait(0.1)
-        
-        if CONFIG.Highlight and not HasDrawingAPI() then
-            esp.Highlight = CreateHighlight(character)
-        end
-    end
-    
-    if player.Character then
-        OnCharacterAdded(player.Character)
-    end
-    
-    player.CharacterAdded:Connect(OnCharacterAdded)
-end
-
-local function RemoveESP(player)
-    local esp = ESPInstances[player]
-    if not esp then return end
-    
-    -- Clean up Drawing objects
-    if esp.Box then HideBox(esp.Box) end
-    if esp.Skeleton then HideSkeleton(esp.Skeleton) end
-    if esp.Distance then esp.Distance.Visible = false end
-    if esp.HealthBar then
-        esp.HealthBar.Background.Visible = false
-        esp.HealthBar.Foreground.Visible = false
-    end
-    if esp.Name then esp.Name.Visible = false end
-    if esp.OffscreenArrow then esp.OffscreenArrow.Visible = false end
-    
-    -- Clean up Instance objects
-    if esp.Highlight and esp.Highlight.Parent then
-        esp.Highlight:Destroy()
-    end
-    
-    ESPInstances[player] = nil
-end
-
-local function UpdateESP()
-    if not CONFIG.Enabled then return end
-    
-    local localPlayer = Players.LocalPlayer
-    
-    for player, esp in pairs(ESPInstances) do
-        if not player or not player.Parent then
-            RemoveESP(player)
-            continue
-        end
-        
-        -- Check if should show this player
-        if not ShouldShowPlayer(player) then
-            if esp.Box then HideBox(esp.Box) end
-            if esp.Skeleton then HideSkeleton(esp.Skeleton) end
-            if esp.Distance then esp.Distance.Visible = false end
-            if esp.HealthBar then
-                esp.HealthBar.Background.Visible = false
-                esp.HealthBar.Foreground.Visible = false
-            end
-            if esp.Name then esp.Name.Visible = false end
-            if esp.OffscreenArrow then esp.OffscreenArrow.Visible = false end
-            continue
-        end
-        
-        -- Check team
-        if IsSameTeam(localPlayer, player) then
-            if esp.Box then HideBox(esp.Box) end
-            if esp.Skeleton then HideSkeleton(esp.Skeleton) end
-            if esp.Distance then esp.Distance.Visible = false end
-            if esp.HealthBar then
-                esp.HealthBar.Background.Visible = false
-                esp.HealthBar.Foreground.Visible = false
-            end
-            if esp.Name then esp.Name.Visible = false end
-            if esp.OffscreenArrow then esp.OffscreenArrow.Visible = false end
-            continue
+    for _, roleName in pairs(CONFIG.PriorityRoles) do
+        if player.Name:lower():find(roleName:lower()) then
+            return true
         end
         
         local character = player.Character
-        if not character then continue end
-        
-        local hrp = character:FindFirstChild("HumanoidRootPart")
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        
-        if not hrp or not humanoid or humanoid.Health <= 0 then continue end
-        
-        -- Calculate distance
-        local localHRP = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
-        if not localHRP then continue end
-        
-        local distance = GetDistance(localHRP.Position, hrp.Position)
-        
-        -- Check distance limits
-        if distance > CONFIG.MaxDistance or distance < CONFIG.MinDistance then
-            if esp.Box then HideBox(esp.Box) end
-            if esp.Skeleton then HideSkeleton(esp.Skeleton) end
-            if esp.Distance then esp.Distance.Visible = false end
-            if esp.HealthBar then
-                esp.HealthBar.Background.Visible = false
-                esp.HealthBar.Foreground.Visible = false
+        if character and character:FindFirstChild("Role") then
+            local role = character.Role.Value
+            if role:lower():find(roleName:lower()) then
+                return true
             end
-            if esp.Name then esp.Name.Visible = false end
-            if esp.OffscreenArrow then esp.OffscreenArrow.Visible = false end
-            continue
-        end
-        
-        -- Check FOV
-        if not IsInFOV(hrp.Position) then
-            if esp.Box then HideBox(esp.Box) end
-            if esp.Skeleton then HideSkeleton(esp.Skeleton) end
-            if esp.Distance then esp.Distance.Visible = false end
-            if esp.HealthBar then
-                esp.HealthBar.Background.Visible = false
-                esp.HealthBar.Foreground.Visible = false
-            end
-            if esp.Name then esp.Name.Visible = false end
-            
-            -- Show offscreen arrow
-            if esp.OffscreenArrow then
-                local color = GetDynamicColor(player, distance)
-                local transparency = GetTransparencyByDistance(distance)
-                UpdateOffscreenArrow(esp.OffscreenArrow, hrp.Position, color, transparency)
-            end
-            
-            continue
-        end
-        
-        -- Get color and transparency
-        local color = GetDynamicColor(player, distance)
-        local transparency = GetTransparencyByDistance(distance)
-        
-        -- Update Box
-        if esp.Box and CONFIG.Box then
-            local corners, onScreen = Get2DBox(character)
-            if corners and onScreen then
-                UpdateBox(esp.Box, corners, color, transparency)
-            else
-                HideBox(esp.Box)
-            end
-        end
-        
-        -- Update Skeleton
-        if esp.Skeleton and CONFIG.Skeleton then
-            UpdateSkeleton(esp.Skeleton, character, color, transparency)
-        end
-        
-        -- Update Distance
-        if esp.Distance and CONFIG.Distance then
-            UpdateDistanceLabel(esp.Distance, hrp.Position, distance, transparency)
-        end
-        
-        -- Update Health Bar
-        if esp.HealthBar and CONFIG.HealthBar then
-            UpdateHealthBar(esp.HealthBar, hrp.Position, humanoid.Health, humanoid.MaxHealth, transparency)
-        end
-        
-        -- Update Name
-        if esp.Name and CONFIG.CustomName then
-            UpdateNameLabel(esp.Name, hrp.Position, player.Name, transparency)
-        end
-        
-        -- Hide offscreen arrow when on screen
-        if esp.OffscreenArrow then
-            esp.OffscreenArrow.Visible = false
         end
     end
+    
+    return false
+end
+
+-- Get target part with hitbox expansion
+local function GetTargetPart(character)
+    local targetPart = character:FindFirstChild(CONFIG.TargetPart)
+    
+    if not targetPart and CONFIG.MultiHitbox then
+        -- Try alternative hitboxes
+        local alternatives = {
+            CONFIG.AlternativePart,
+            "Head",
+            "UpperTorso",
+            "LowerTorso",
+            "HumanoidRootPart"
+        }
+        
+        for _, partName in pairs(alternatives) do
+            targetPart = character:FindFirstChild(partName)
+            if targetPart then break end
+        end
+    end
+    
+    return targetPart
+end
+
+-- Calculate prediction
+local function PredictPosition(targetPart, velocity)
+    if not CONFIG.Prediction then
+        return targetPart.Position
+    end
+    
+    local ping = CONFIG.PingBased and GetPing() or 0
+    local predictionTime = CONFIG.PredictionStrength + ping
+    
+    return targetPart.Position + (velocity * predictionTime)
+end
+
+-- Add humanization to aim
+local function HumanizeAim(targetPosition)
+    if not CONFIG.Humanized or CONFIG.RageMode then
+        return targetPosition
+    end
+    
+    -- Add small random offset
+    local randomX = (math.random() - 0.5) * CONFIG.RandomOffset
+    local randomY = (math.random() - 0.5) * CONFIG.RandomOffset
+    local randomZ = (math.random() - 0.5) * CONFIG.RandomOffset
+    
+    return targetPosition + Vector3.new(randomX, randomY, randomZ)
+end
+
+-- Add camera shake (anti-detection)
+local function AddCameraShake()
+    if not CONFIG.AntiDetection or not CONFIG.Humanized then return end
+    
+    local shake = math.random() * CONFIG.ShakeAmount
+    Camera.CFrame = Camera.CFrame * CFrame.Angles(
+        math.rad(shake),
+        math.rad(shake),
+        0
+    )
+end
+
+-- ============================================
+-- FEATURE 59: FOV CIRCLE
+-- ============================================
+
+local function CreateFOVCircle()
+    if not Drawing then return nil end
+    
+    local circle = Drawing.new("Circle")
+    circle.Visible = CONFIG.FOVCircle
+    circle.Color = Color3.fromRGB(255, 255, 255)
+    circle.Thickness = 2
+    circle.Transparency = 0.5
+    circle.NumSides = 64
+    circle.Filled = false
+    
+    return circle
+end
+
+local function UpdateFOVCircle()
+    if not State.FOVCircle then return end
+    
+    local centerX = Camera.ViewportSize.X / 2
+    local centerY = Camera.ViewportSize.Y / 2
+    
+    State.FOVCircle.Position = Vector2.new(centerX, centerY)
+    State.FOVCircle.Radius = math.tan(math.rad(CONFIG.FOV / 2)) * Camera.ViewportSize.Y
+    State.FOVCircle.Visible = CONFIG.FOVCircle
+end
+
+-- ============================================
+-- FEATURE 60: TARGET ACQUISITION
+-- ============================================
+
+local function GetBestTarget()
+    local localPlayer = Players.LocalPlayer
+    local character = localPlayer.Character
+    if not character then return nil end
+    
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return nil end
+    
+    local bestTarget = nil
+    local bestScore = math.huge
+    
+    -- Check locked target first
+    if CONFIG.TargetLock and State.LockedTarget then
+        local lockedPlayer = State.LockedTarget
+        if lockedPlayer.Character and lockedPlayer.Character:FindFirstChild("Humanoid") then
+            local humanoid = lockedPlayer.Character.Humanoid
+            if humanoid.Health > 0 then
+                local targetPart = GetTargetPart(lockedPlayer.Character)
+                if targetPart then
+                    local inFOV, distance = IsInFOV(targetPart.Position)
+                    if inFOV then
+                        return lockedPlayer, targetPart
+                    end
+                end
+            end
+        end
+        
+        -- Locked target invalid, clear it
+        State.LockedTarget = nil
+    end
+    
+    -- Find best target
+    for _, player in pairs(Players:GetPlayers()) do
+        if player == localPlayer then continue end
+        if IsFriend(player) then continue end
+        
+        local playerChar = player.Character
+        if not playerChar then continue end
+        
+        local humanoid = playerChar:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then continue end
+        
+        local targetPart = GetTargetPart(playerChar)
+        if not targetPart then continue end
+        
+        -- Distance check
+        local distance = GetDistance(rootPart.Position, targetPart.Position)
+        if CONFIG.DistanceCheck then
+            if distance > CONFIG.MaxDistance or distance < CONFIG.MinDistance then
+                continue
+            end
+        end
+        
+        -- FOV check
+        local inFOV, fovDistance = IsInFOV(targetPart.Position)
+        if not inFOV then continue end
+        
+        -- Visibility check
+        if not IsVisible(targetPart, Camera.CFrame.Position) then continue end
+        
+        -- Calculate score (lower is better)
+        local score = fovDistance
+        
+        -- Prioritize based on role
+        if IsPriorityTarget(player) then
+            score = score * 0.5 -- Reduce score for priority targets
+        end
+        
+        -- Prefer closer targets in legit mode
+        if CONFIG.LegitMode then
+            score = score + (distance / 10)
+        end
+        
+        if score < bestScore then
+            bestScore = score
+            bestTarget = player
+        end
+    end
+    
+    if bestTarget then
+        local targetPart = GetTargetPart(bestTarget.Character)
+        return bestTarget, targetPart
+    end
+    
+    return nil, nil
+end
+
+-- ============================================
+-- FEATURE 56-57: AIMBOT & AIM ASSIST
+-- ============================================
+
+local function AimAt(targetPosition)
+    if CONFIG.LegitMode and CONFIG.Smoothing then
+        -- Smooth aim
+        local currentCFrame = Camera.CFrame
+        local targetCFrame = CFrame.new(Camera.CFrame.Position, targetPosition)
+        
+        local smoothness = CONFIG.RageMode and 1 or CONFIG.Smoothness
+        Camera.CFrame = currentCFrame:Lerp(targetCFrame, smoothness)
+    else
+        -- Instant aim (rage mode or silent aim)
+        Camera.CFrame = CFrame.new(Camera.CFrame.Position, targetPosition)
+    end
+    
+    AddCameraShake()
+end
+
+local function UpdateAim()
+    if not CONFIG.SilentAim and not CONFIG.AimAssist then return end
+    
+    -- Check if aim key is pressed
+    if CONFIG.KeyActivated then
+        local aimKeyPressed = false
+        
+        if CONFIG.AimKey == Enum.UserInputType.MouseButton2 then
+            aimKeyPressed = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+        else
+            aimKeyPressed = UserInputService:IsKeyDown(CONFIG.AimKey)
+        end
+        
+        if not aimKeyPressed then
+            State.CurrentTarget = nil
+            return
+        end
+    end
+    
+    -- Get target
+    local target, targetPart = GetBestTarget()
+    if not target or not targetPart then
+        State.CurrentTarget = nil
+        return
+    end
+    
+    State.CurrentTarget = target
+    
+    -- Get velocity for prediction
+    local velocity = Vector3.zero
+    if targetPart.AssemblyLinearVelocity then
+        velocity = targetPart.AssemblyLinearVelocity
+    end
+    
+    -- Predict position
+    local predictedPosition = PredictPosition(targetPart, velocity)
+    
+    -- Humanize aim
+    local finalPosition = HumanizeAim(predictedPosition)
+    
+    -- Apply aim
+    if CONFIG.SilentAim then
+        -- Silent aim (no camera movement, handled by hook)
+        -- This would require hooking game functions
+        -- For now, we'll use regular aim
+        AimAt(finalPosition)
+    elseif CONFIG.AimAssist then
+        AimAt(finalPosition)
+    end
+end
+
+-- ============================================
+-- FEATURE 58: TRIGGER BOT
+-- ============================================
+
+local function UpdateTriggerBot()
+    if not CONFIG.TriggerBot then return end
+    
+    local target, targetPart = GetBestTarget()
+    if not target or not targetPart then return end
+    
+    local mouse = Players.LocalPlayer:GetMouse()
+    if not mouse.Target then return end
+    
+    -- Check if mouse is on target
+    local mouseTarget = mouse.Target
+    if mouseTarget:IsDescendantOf(target.Character) then
+        task.wait(CONFIG.TriggerDelay)
+        
+        -- Simulate click
+        if mouse1click then
+            mouse1click()
+        elseif mouse1press then
+            mouse1press()
+            task.wait(CONFIG.TriggerHoldTime)
+            mouse1release()
+        end
+    end
+end
+
+-- ============================================
+-- FEATURE 66: AUTO FIRE
+-- ============================================
+
+local function UpdateAutoFire()
+    if not CONFIG.AutoFire then return end
+    
+    local currentTime = tick()
+    if currentTime - State.LastFireTime < CONFIG.FireRate then return end
+    
+    local target, targetPart = GetBestTarget()
+    if not target or not targetPart then return end
+    
+    -- Burst mode
+    if CONFIG.BurstMode then
+        if State.BurstCounter < CONFIG.BurstCount then
+            if mouse1click then
+                mouse1click()
+            elseif mouse1press then
+                mouse1press()
+                task.wait(0.05)
+                mouse1release()
+            end
+            
+            State.BurstCounter = State.BurstCounter + 1
+            State.LastFireTime = currentTime
+        else
+            State.BurstCounter = 0
+            task.wait(CONFIG.FireRate * 2) -- Delay between bursts
+        end
+    else
+        -- Single fire
+        if mouse1click then
+            mouse1click()
+        elseif mouse1press then
+            mouse1press()
+            task.wait(0.05)
+            mouse1release()
+        end
+        
+        State.LastFireTime = currentTime
+    end
+end
+
+-- ============================================
+-- FEATURE 75: NPC TARGETING
+-- ============================================
+
+local function GetNPCTarget()
+    if not CONFIG.NPCTarget then return nil end
+    
+    local bestNPC = nil
+    local bestDistance = math.huge
+    
+    for _, npc in pairs(Workspace:GetDescendants()) do
+        if npc:IsA("Model") and npc:FindFirstChild("Humanoid") then
+            -- Check if it's not a player
+            local isPlayer = Players:GetPlayerFromCharacter(npc)
+            if isPlayer then continue end
+            
+            local humanoid = npc.Humanoid
+            if humanoid.Health <= 0 then continue end
+            
+            local rootPart = npc:FindFirstChild("HumanoidRootPart")
+            if not rootPart then continue end
+            
+            local distance = GetDistance(Camera.CFrame.Position, rootPart.Position)
+            if distance < bestDistance then
+                bestDistance = distance
+                bestNPC = npc
+            end
+        end
+    end
+    
+    if bestNPC then
+        local targetPart = GetTargetPart(bestNPC)
+        return bestNPC, targetPart
+    end
+    
+    return nil, nil
 end
 
 -- ============================================
 -- PUBLIC API
 -- ============================================
 
-function ESPSystem:Enable()
-    CONFIG.Enabled = true
-    
-    -- Create ESP for existing players
-    for _, player in pairs(Players:GetPlayers()) do
-        CreateESPForPlayer(player)
-    end
-    
-    -- Handle new players
-    Connections.PlayerAdded = Players.PlayerAdded:Connect(function(player)
-        task.wait(1)
-        CreateESPForPlayer(player)
-    end)
-    
-    -- Handle player removal
-    Connections.PlayerRemoving = Players.PlayerRemoving:Connect(function(player)
-        RemoveESP(player)
-    end)
+function CombatSystem:Enable()
+    -- Create FOV circle
+    State.FOVCircle = CreateFOVCircle()
     
     -- Main update loop
-    Connections.UpdateLoop = RunService.RenderStepped:Connect(function()
-        if CONFIG.Optimized then
-            -- Update at configured rate
+    State.Connections.UpdateLoop = RunService.RenderStepped:Connect(function()
+        UpdateFOVCircle()
+        UpdateAim()
+        UpdateTriggerBot()
+        UpdateAutoFire()
+        
+        if CONFIG.UpdateRate < 60 then
             task.wait(1 / CONFIG.UpdateRate)
         end
-        UpdateESP()
+    end)
+    
+    -- Lock key handler
+    State.Connections.LockKey = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end
+        
+        if input.KeyCode == CONFIG.LockKey then
+            if State.CurrentTarget then
+                State.LockedTarget = State.CurrentTarget
+                print("🎯 Target locked:", State.LockedTarget.Name)
+            else
+                State.LockedTarget = nil
+                print("🔓 Target unlocked")
+            end
+        end
     end)
 end
 
-function ESPSystem:Disable()
-    CONFIG.Enabled = false
-    
-    -- Remove all ESP
-    for player, _ in pairs(ESPInstances) do
-        RemoveESP(player)
-    end
-    
-    -- Disconnect connections
-    for _, connection in pairs(Connections) do
+function CombatSystem:Disable()
+    -- Disconnect all connections
+    for _, connection in pairs(State.Connections) do
         if connection then
             connection:Disconnect()
         end
     end
-    Connections = {}
+    State.Connections = {}
+    
+    -- Remove FOV circle
+    if State.FOVCircle then
+        State.FOVCircle:Remove()
+        State.FOVCircle = nil
+    end
+    
+    -- Clear state
+    State.CurrentTarget = nil
+    State.LockedTarget = nil
 end
 
-function ESPSystem:Toggle()
-    if CONFIG.Enabled then
+function CombatSystem:Toggle()
+    if next(State.Connections) then
         self:Disable()
     else
         self:Enable()
     end
 end
 
-function ESPSystem:SetConfig(key, value)
+function CombatSystem:SetConfig(key, value)
     if CONFIG[key] ~= nil then
         CONFIG[key] = value
     end
 end
 
-function ESPSystem:GetConfig(key)
+function CombatSystem:GetConfig(key)
     return CONFIG[key]
 end
 
-function ESPSystem:AddToWhitelist(userId)
-    CONFIG.Whitelist[tostring(userId)] = true
+function CombatSystem:GetCurrentTarget()
+    return State.CurrentTarget
 end
 
-function ESPSystem:RemoveFromWhitelist(userId)
-    CONFIG.Whitelist[tostring(userId)] = nil
+function CombatSystem:LockTarget(player)
+    State.LockedTarget = player
 end
 
-function ESPSystem:AddToBlacklist(userId)
-    CONFIG.Blacklist[tostring(userId)] = true
-end
-
-function ESPSystem:RemoveFromBlacklist(userId)
-    CONFIG.Blacklist[tostring(userId)] = nil
+function CombatSystem:UnlockTarget()
+    State.LockedTarget = nil
 end
 
 -- ============================================
 -- INITIALIZATION
 -- ============================================
 
-function ESPSystem.new()
-    local self = setmetatable({}, ESPSystem)
+function CombatSystem.new()
+    local self = setmetatable({}, CombatSystem)
     return self
 end
 
-return ESPSystem
+return CombatSystem
